@@ -677,7 +677,7 @@ export default function Home() {
             autoPlay
             playsInline
             muted
-            className="w-full h-full object-cover rounded-none md:rounded-l-3xl shadow-2xl transition-transform duration-700 hover:scale-105 [transform:scaleX(-1)]"
+            className="w-full h-full object-cover rounded-none md:rounded-l-3xl shadow-2xl transition-transform duration-700 hover:scale-105"
           />
           {/* Hidden Canvas for capture */}
           <canvas ref={canvasRef} className="hidden" />
