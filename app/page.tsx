@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
@@ -25,17 +26,70 @@ export default function Home() {
 
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [activeSpeech, setActiveSpeech] = useState(false);
-  const [language, setLanguage] = useState<"nepali" | "hindi" | "english">("nepali");
+  const [language, setLanguage] = useState<"nepali" | "hindi" | "english">("english");
   const [isLiveMode, setIsLiveMode] = useState(false);
   const liveModeRef = useRef<NodeJS.Timeout | null>(null);
 
+  //resizable panels
+  const [panelWidth, setPanelWidth] = useState(384); // 384px = md:w-96 default
+  const isDragging = useRef(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
   const [error, setError] = useState<string | null>(null);
+
+  //Outfit mode states
+  const [outfitOverlay, setOutfitOverlay] = useState<string | null>(null);
+  const [isOutfitLoading, setIsOutfitLoading] = useState(false);
+  const [outfitKeywords, setOutfitKeywords] = useState<string[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
+
+  const handleMouseDown = () => {
+    isDragging.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!isDragging.current || !containerRef.current) return;
+    const containerRect = containerRef.current.getBoundingClientRect();
+    const newWidth = e.clientX - containerRect.left;
+    // Clamp between 250px and 600px
+    const clamped = Math.min(600, Math.max(250, newWidth));
+    setPanelWidth(clamped);
+  }, []);
+
+  const handleMouseUp = useCallback(() => {
+    isDragging.current = false;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  }, []);
+
+  // Touch support for mobile
+  const handleTouchMove = useCallback((e: TouchEvent) => {
+    if (!isDragging.current || !containerRef.current) return;
+    const containerRect = containerRef.current.getBoundingClientRect();
+    const newWidth = e.touches[0].clientX - containerRect.left;
+    const clamped = Math.min(600, Math.max(250, newWidth));
+    setPanelWidth(clamped);
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    window.addEventListener("touchmove", handleTouchMove);
+    window.addEventListener("touchend", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleMouseUp);
+    };
+  }, [handleMouseMove, handleMouseUp, handleTouchMove]);
 
   useEffect(() => {
     scrollToBottom();
@@ -350,11 +404,94 @@ export default function Home() {
       .finally(() => setIsExplaining(false));
   };
 
+  //Image Google links
+  const extractClothingKeywords = (text: string): string[] => {
+  const keywords: string[] = [];
+
+  // Extract items from "Detected:" line
+  const detectedMatch = text.match(/Detected:\s*([^\n]+)/i);
+    if (detectedMatch) {
+      const items = detectedMatch[1].split(",").map(s => s.trim()).filter(Boolean);
+      keywords.push(...items);
+    }
+
+    // Extract items from "Pieces:" lines
+    const piecesMatches = text.matchAll(/Pieces:\s*([^\n]+)/gi);
+    for (const match of piecesMatches) {
+      const items = match[1].split(",").map(s => s.trim()).filter(Boolean);
+      keywords.push(...items);
+    }
+
+    // Deduplicate and limit to 8 keywords
+    return [...new Set(keywords)].slice(0, 8);
+  };
+
+  const openGoogleImages = (keyword: string) => {
+    const query = encodeURIComponent(`${keyword} outfit fashion style`);
+    window.open(`https://www.google.com/search?tbm=isch&q=${query}`, "_blank");
+  };
+
+  //Outfit
+  const handleOutfit = async () => {
+    if (isExplaining || isOutfitLoading) return;
+
+    const frameBase64 = captureFrame();
+    if (!frameBase64) {
+      setError("Failed to capture image from camera.");
+      return;
+    }
+
+    setIsOutfitLoading(true);
+    setOutfitOverlay(null);
+    setOutfitKeywords([]);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/explain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: frameBase64,
+          question: "Analyze the clothing and suggest outfits.",
+          difficulty,
+          scanMode,
+          language,
+          mode: "outfit",
+          conversationHistory: [],
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to analyze outfit");
+
+      // Extract keywords from the response
+      const keywords = extractClothingKeywords(data.text);
+
+      setOutfitOverlay(data.text);
+      setOutfitKeywords(keywords);
+      addMessage("ai", data.text);
+      speakText(data.text);
+
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsOutfitLoading(false);
+    }
+  };
+
   return (
-    <div className="flex flex-col md:flex-row h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 text-gray-50 font-sans overflow-hidden">
+    <div ref={containerRef} className="flex flex-col md:flex-row h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 text-gray-50 font-sans overflow-hidden">
 
       {/* Left Panel: Conversation History */}
-      <div className="flex flex-col w-full md:w-96 border-r border-purple-500/30 bg-gradient-to-b from-gray-900 to-gray-800 h-1/2 md:h-full shrink-0 shadow-2xl">
+      <div   className="flex flex-col border-r border-purple-500/30 bg-gradient-to-b from-gray-900 to-gray-800 shrink-0 shadow-2xl"
+        style={{
+          width: typeof window !== "undefined" && window.innerWidth >= 768
+            ? `${panelWidth}px`
+            : "100%",
+          height: typeof window !== "undefined" && window.innerWidth >= 768
+            ? "100%"
+            : "50%",
+        }}>
         <div className="p-4 border-b border-purple-500/30 flex items-center justify-between shadow-sm z-10 bg-gradient-to-r from-purple-600 to-blue-600 rounded-t-lg">
           <h1 className="text-xl font-bold bg-gradient-to-r from-yellow-400 via-pink-500 to-purple-500 bg-clip-text text-transparent animate-pulse">✨ Explain Anything ✨</h1>
           <div className="text-sm text-purple-200">AI-Powered Vision</div>
@@ -386,6 +523,98 @@ export default function Home() {
               </div>
             ))
           )}
+          {/* Outfit Overlay — appears on top of the live video */}
+          {outfitOverlay && (
+            <div className="absolute inset-0 z-35 flex items-end justify-center pb-32 px-4 pointer-events-none">
+              <div className="pointer-events-auto w-full max-w-sm bg-black/80 backdrop-blur-md border border-purple-500/50 rounded-2xl p-4 shadow-2xl animate-fade-in">
+                
+                {/* Header */}
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">👗</span>
+                    <span className="text-sm font-bold text-purple-300">Style Suggestions</span>
+                  </div>
+                  <button
+                    onClick={() => { setOutfitOverlay(null); setOutfitKeywords([]); }}
+                    className="w-6 h-6 rounded-full bg-gray-700 hover:bg-gray-600 flex items-center justify-center transition-colors"
+                  >
+                    <svg className="w-3 h-3 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+
+                {/* Suggestion Text */}
+                <p className="text-xs text-gray-200 leading-relaxed whitespace-pre-wrap mb-3">
+                  {outfitOverlay}
+                </p>
+
+                {/* Google Images Pills */}
+                {outfitKeywords.length > 0 && (
+                  <div className="mb-3">
+                    <p className="text-xs text-purple-400 font-semibold mb-2">
+                      🔍 Tap to see outfit visuals on Google Images:
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {outfitKeywords.map((keyword, index) => (
+                        <button
+                          key={index}
+                          onClick={() => openGoogleImages(keyword)}
+                          className="flex items-center gap-1 px-3 py-1.5 rounded-full bg-gradient-to-r from-purple-600/70 to-pink-600/70 border border-purple-400/50 text-white text-xs font-medium hover:from-purple-500 hover:to-pink-500 hover:scale-105 transition-all shadow-md"
+                        >
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                          </svg>
+                          {keyword}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Full Outfit Search Button */}
+                <button
+                  onClick={() => {
+                    const fullQuery = outfitKeywords.slice(0, 3).join(" ");
+                    openGoogleImages(fullQuery + " complete outfit");
+                  }}
+                  className="w-full py-2 rounded-xl bg-gradient-to-r from-blue-600/70 to-purple-600/70 border border-blue-400/50 text-white text-xs font-bold hover:opacity-90 transition-opacity mb-2 flex items-center justify-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  See Full Outfit Inspiration
+                </button>
+
+                {/* Scan Again */}
+                <button
+                  onClick={() => { setOutfitOverlay(null); setOutfitKeywords([]); handleOutfit(); }}
+                  className="w-full py-2 rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs font-bold hover:opacity-90 transition-opacity"
+                >
+                  👗 Scan Again
+                </button>
+
+              </div>
+            </div>
+          )}
+
+          {/* Loading shimmer while outfit is being analyzed */}
+          {isOutfitLoading && (
+            <div className="absolute inset-0 z-35 flex items-end justify-center pb-32 px-4 pointer-events-none">
+              <div className="w-full max-w-sm bg-black/80 backdrop-blur-md border border-purple-500/50 rounded-2xl p-4 shadow-2xl">
+                <div className="flex items-center gap-3">
+                  <span className="text-lg">👗</span>
+                  <div className="flex gap-1">
+                    <span className="w-2 h-2 rounded-full bg-purple-500 animate-bounce"></span>
+                    <span className="w-2 h-2 rounded-full bg-pink-500 animate-bounce" style={{ animationDelay: "0.2s" }}></span>
+                    <span className="w-2 h-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: "0.4s" }}></span>
+                  </div>
+                  <span className="text-xs text-purple-300 font-semibold">Analyzing your style...</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {isExplaining && (
             <div className="flex justify-start animate-fade-in">
               <div className="bg-gradient-to-r from-gray-700 to-gray-800 py-3 px-5 rounded-2xl rounded-tl-sm border border-purple-500/30 w-fit flex gap-1 items-center shadow-lg">
@@ -400,8 +629,30 @@ export default function Home() {
         </div>
       </div>
 
+      {/* Draggable Divider */}
+      <div
+        onMouseDown={handleMouseDown}
+        onTouchStart={handleMouseDown}
+        className="hidden md:flex w-1.5 shrink-0 cursor-col-resize items-center justify-center group relative z-50"
+        style={{ background: "transparent" }}
+      >
+        {/* Visual track */}
+        <div className="absolute inset-y-0 w-px bg-purple-500/30 group-hover:bg-purple-400/60 transition-colors duration-150" />
+
+        {/* Drag handle pill — visible on hover */}
+        <div className="relative z-10 flex flex-col items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+          <div className="w-1 h-8 rounded-full bg-purple-400/80 shadow-lg" />
+          <div className="flex flex-col gap-0.5">
+            <div className="w-3 h-0.5 rounded-full bg-purple-300/60" />
+            <div className="w-3 h-0.5 rounded-full bg-purple-300/60" />
+            <div className="w-3 h-0.5 rounded-full bg-purple-300/60" />
+          </div>
+          <div className="w-1 h-8 rounded-full bg-purple-400/80 shadow-lg" />
+        </div>
+      </div>
+
       {/* Right Panel: Camera & Controls */}
-      <div className="flex-1 flex flex-col relative h-1/2 md:h-full bg-gradient-to-br from-black via-purple-900/20 to-blue-900/20">
+      <div className="flex-1 flex flex-col relative h-1/2 md:h-full bg-gradient-to-br from-black via-purple-900/20 to-blue-900/20 min-w-0">
 
         {/* Error Banner */}
         {error && (
@@ -480,12 +731,10 @@ export default function Home() {
           </div>
 
           {/* Scan Mode Selector */}
-          <div className="absolute top-16 right-4 z-20 flex bg-gradient-to-r from-gray-900/90 to-purple-900/90 backdrop-blur-md p-1 rounded-full border border-purple-500/50 shadow-xl overflow-x-auto max-w-[calc(100vw-2rem)] hide-scrollbar">
-            {(["General", "Ingredients", "Hazards", "Study", "Translate"] as ScanMode[]).map((mode) => {
+          <div className="absolute top-16 right-4 z-20 flex bg-linear-to-r from-gray-900/90 to-purple-900/90 backdrop-blur-md p-1 rounded-full border border-purple-500/50 shadow-xl overflow-x-auto max-w-[calc(100vw-2rem)] hide-scrollbar">
+            {(["General", "Study", "Translate"] as ScanMode[]).map((mode) => {
               const icons: Record<ScanMode, string> = {
                 General: "🔍",
-                Ingredients: "🥗",
-                Hazards: "⚠️",
                 Study: "📚",
                 Translate: "🌐",
               };
@@ -494,7 +743,7 @@ export default function Home() {
                   key={mode}
                   onClick={() => setScanMode(mode)}
                   className={`px-3 py-2 rounded-full text-xs font-semibold whitespace-nowrap transition-all duration-300 transform hover:scale-110 ${scanMode === mode
-                    ? "bg-gradient-to-r from-purple-500 to-blue-500 shadow-md text-white scale-105"
+                    ? "bg-linear-to-r from-purple-500 to-blue-500 shadow-md text-white scale-105"
                     : "text-gray-300 hover:text-white scale-95"
                     }`}
                 >
@@ -506,8 +755,8 @@ export default function Home() {
 
           {/* Overlay scanning effect during thinking */}
           {isExplaining && (
-            <div className="absolute inset-0 z-30 pointer-events-none w-full h-full bg-gradient-to-br from-purple-500/20 to-blue-500/20 mix-blend-screen animate-pulse">
-              <div className="absolute w-full h-[3px] bg-gradient-to-r from-purple-400 via-blue-400 to-indigo-400 shadow-[0_0_20px_rgba(147,51,234,1)] animate-scan rounded-full"></div>
+            <div className="absolute inset-0 z-30 pointer-events-none w-full h-full bg-linear-to-br from-purple-500/20 to-blue-500/20 mix-blend-screen animate-pulse">
+              <div className="absolute w-full h-0.75 bg-linear-to-r from-purple-400 via-blue-400 to-indigo-400 shadow-[0_0_20px_rgba(147,51,234,1)] animate-scan rounded-full"></div>
             </div>
           )}
 
@@ -520,12 +769,12 @@ export default function Home() {
                 onClick={startVoiceInput}
                 disabled={isExplaining || isListening}
                 className={`relative group flex items-center justify-center w-16 h-16 rounded-full transition-all duration-300 transform hover:scale-110 ${isListening
-                  ? "bg-gradient-to-r from-red-500 to-pink-500 text-white shadow-[0_0_25px_rgba(239,68,68,0.8)] animate-pulse"
-                  : "bg-gradient-to-r from-gray-800/90 to-purple-800/90 backdrop-blur-xl border border-purple-500/50 text-gray-300 hover:text-white shadow-xl hover:shadow-purple-500/30"
+                  ? "bg-linear-to-r from-red-500 to-pink-500 text-white shadow-[0_0_25px_rgba(239,68,68,0.8)] animate-pulse"
+                  : "bg-linear-to-r from-gray-800/90 to-purple-800/90 backdrop-blur-xl border border-purple-500/50 text-gray-300 hover:text-white shadow-xl hover:shadow-purple-500/30"
                   } disabled:opacity-50 disabled:cursor-not-allowed`}
                 aria-label="Ask a question"
               >
-                <div className="absolute inset-0 rounded-full transition-transform duration-300 group-hover:scale-125 -z-10 bg-gradient-to-r from-purple-500/20 to-blue-500/20"></div>
+                <div className="absolute inset-0 rounded-full transition-transform duration-300 group-hover:scale-125 -z-10 bg-linear-to-r from-purple-500/20 to-blue-500/20"></div>
                 <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                 </svg>
@@ -536,7 +785,7 @@ export default function Home() {
               <button
                 onClick={handleSolve}
                 disabled={isExplaining || isListening}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-gradient-to-r from-amber-500 to-orange-500 text-white text-sm font-bold shadow-lg hover:scale-110 transition-all disabled:opacity-50"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-linear-to-r from-amber-500 to-orange-500 text-white text-sm font-bold shadow-lg hover:scale-110 transition-all disabled:opacity-50"
               >
                 🔢 Solve
               </button>
@@ -549,7 +798,7 @@ export default function Home() {
                   }`}
                 aria-label="Capture and Explain"
               >
-                <div className={`w-full h-full rounded-full transition-colors duration-300 ${isExplaining ? "bg-gradient-to-r from-purple-600 to-blue-600" : "bg-white hover:bg-gradient-to-r hover:from-purple-200 hover:to-blue-200"
+                <div className={`w-full h-full rounded-full transition-colors duration-300 ${isExplaining ? "bg-linear-to-r from-purple-600 to-blue-600" : "bg-white hover:bg-linear-to-r hover:from-purple-200 hover:to-blue-200"
                   }`}></div>
 
                 <span className="absolute -bottom-10 text-sm font-bold tracking-widest text-white/90 uppercase shadow-black drop-shadow-lg">
@@ -561,9 +810,21 @@ export default function Home() {
               <button
                 onClick={handleTranslate}
                 disabled={isExplaining || isListening}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-gradient-to-r from-green-500 to-teal-500 text-white text-sm font-bold shadow-lg hover:scale-110 transition-all disabled:opacity-50"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-linear-to-r from-green-500 to-teal-500 text-white text-sm font-bold shadow-lg hover:scale-110 transition-all disabled:opacity-50"
               >
                 🌐 Translate
+              </button>
+
+              <button
+                onClick={handleOutfit}
+                disabled={isExplaining || isListening || isOutfitLoading}
+                className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-white text-sm font-bold shadow-lg hover:scale-110 transition-all disabled:opacity-50 ${
+                  isOutfitLoading
+                    ? "bg-linear-to-r from-pink-600 to-purple-600 animate-pulse"
+                    : "bg-linear-to-r from-pink-500 to-purple-500"
+                }`}
+              >
+                👗 Style
               </button>
 
             </div>
