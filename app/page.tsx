@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 
 type ScanMode = "General" | "Ingredients" | "Hazards" | "Study" | "Translate";
-
+type Language = "english" | "nepali" | "hindi";
 type Difficulty = "Explain like I'm 5" | "Student" | "Expert";
 
 interface ChatMessage {
@@ -16,17 +16,21 @@ interface ChatMessage {
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  
+
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [difficulty, setDifficulty] = useState<Difficulty>("Student");
   const [scanMode, setScanMode] = useState<ScanMode>("General");
   const [isExplaining, setIsExplaining] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  
+
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
-  
+  const [activeSpeech, setActiveSpeech] = useState(false);
+  const [language, setLanguage] = useState<"nepali" | "hindi" | "english">("nepali");
+  const [isLiveMode, setIsLiveMode] = useState(false);
+  const liveModeRef = useRef<NodeJS.Timeout | null>(null);
+
   const [error, setError] = useState<string | null>(null);
-  
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -53,6 +57,44 @@ export default function Home() {
   }, [isExplaining]);
 
   // Initialize Camera
+  useEffect(() => {
+    if (isLiveMode) {
+      liveModeRef.current = setInterval(async () => {
+        const frameBase64 = captureFrame();
+        if (!frameBase64) return;
+        try {
+          const res = await fetch("/api/explain", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              image: frameBase64,
+              question: "Briefly describe what you see in 1-2 sentences only.",
+              difficulty,
+              scanMode,
+              language,
+              mode: "live",
+              conversationHistory: [],
+            }),
+          });
+          const data = await res.json();
+          if (data.text) {
+            addMessage("ai", "🔴 LIVE: " + data.text);
+          }
+        } catch (e) {
+          console.error("Live mode error:", e);
+        }
+      }, 6000);
+    } else {
+      if (liveModeRef.current) {
+        clearInterval(liveModeRef.current);
+        liveModeRef.current = null;
+      }
+    }
+    return () => {
+      if (liveModeRef.current) clearInterval(liveModeRef.current);
+    };
+  }, [isLiveMode, language, difficulty, scanMode]);
+
   useEffect(() => {
     async function setupCamera() {
       try {
@@ -85,43 +127,88 @@ export default function Home() {
     ]);
   };
 
-  const speakText = (text: string) => {
+  const speakText = (text: string, forceLanguage?: Language) => {
     if (!window.speechSynthesis) return;
-    
+
     window.speechSynthesis.cancel();
-    
-    // Clean up markdown asterisks for speech
+
     const cleanText = text.replace(/\*/g, '').replace(/_/g, '').replace(/#/g, '');
-    
     const utterance = new SpeechSynthesisUtterance(cleanText);
+    const targetLang = forceLanguage || language;
+
+    const trySpeak = () => {
+      const voices = window.speechSynthesis.getVoices();
+
+      let voice: SpeechSynthesisVoice | undefined;
+
+      if (targetLang === "nepali") {
+        voice =
+          voices.find(v => v.lang === "ne-NP") ||
+          voices.find(v => v.lang === "hi-IN") ||
+          voices.find(v => v.lang.startsWith("hi")) ||
+          voices.find(v => v.lang === "en-IN") ||
+          voices.find(v => v.lang.startsWith("en"));
+      } else if (targetLang === "hindi") {
+        voice =
+          voices.find(v => v.lang === "hi-IN") ||
+          voices.find(v => v.lang.startsWith("hi")) ||
+          voices.find(v => v.lang === "en-IN") ||
+          voices.find(v => v.lang.startsWith("en"));
+      } else {
+        voice =
+          voices.find(v => v.lang === "en-US") ||
+          voices.find(v => v.lang.startsWith("en"));
+      }
+
+      if (!voice) voice = voices[0];
+
+      if (voice) {
+        utterance.voice = voice;
+        utterance.lang = voice.lang;
+      }
+
+      utterance.rate = 0.88;
+      utterance.pitch = 1.0;
+      utterance.onstart = () => setActiveSpeech(true);
+      utterance.onend = () => setActiveSpeech(false);
+      utterance.onerror = (e) => {
+        console.warn("Speech error:", e.error);
+        setActiveSpeech(false);
+      };
+
+      window.speechSynthesis.speak(utterance);
+    };
+
+    // Voices may not be loaded yet — wait if empty
     const voices = window.speechSynthesis.getVoices();
-    const voice = voices.find(v => v.lang.startsWith("en-") && v.name.includes("Google")) || voices[0];
-    if (voice) utterance.voice = voice;
-    
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    
-    window.speechSynthesis.speak(utterance);
+    if (voices.length === 0) {
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.onvoiceschanged = null;
+        trySpeak();
+      };
+    } else {
+      trySpeak();
+    }
   };
 
   const captureFrame = useCallback((): string | null => {
     if (!videoRef.current || !canvasRef.current) return null;
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    
+
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    
+
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
-    
+
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL("image/jpeg", 0.8);
   }, []);
 
   const handleExplain = async (customQuestion?: string) => {
     if (isExplaining) return;
-    
+
     const frameBase64 = captureFrame();
     if (!frameBase64) {
       setError("Failed to capture image from camera.");
@@ -130,7 +217,7 @@ export default function Home() {
 
     setIsExplaining(true);
     setError(null);
-    
+
     const questionText = customQuestion || "Explain what you see.";
     addMessage("user", `📸 Captured image. ${customQuestion ? `Asked: "${customQuestion}"` : ""}`);
 
@@ -143,6 +230,9 @@ export default function Home() {
           question: questionText,
           difficulty,
           scanMode,
+          language,
+          mode: "explain",
+          conversationHistory: chatHistory.slice(-6),
         }),
       });
 
@@ -154,7 +244,7 @@ export default function Home() {
 
       addMessage("ai", data.text);
       speakText(data.text);
-      
+
     } catch (err: any) {
       console.error(err);
       setError(err.message);
@@ -172,7 +262,7 @@ export default function Home() {
     }
 
     const recognition = new SpeechRecognition();
-    recognition.lang = "en-US";
+    recognition.lang = language === "nepali" ? "ne-NP" : language === "hindi" ? "hi-IN" : "en-US";
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
 
@@ -202,16 +292,74 @@ export default function Home() {
     recognition.start();
   };
 
+  const handleSolve = () => {
+    if (isExplaining) return;
+    const frameBase64 = captureFrame();
+    if (!frameBase64) return;
+    setIsExplaining(true);
+    setError(null);
+    addMessage("user", "🔢 Solve this math or code problem.");
+    fetch("/api/explain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image: frameBase64,
+        question: "Solve this completely. Show every step clearly numbered.",
+        difficulty,
+        scanMode,
+        language,
+        mode: "solve",
+        conversationHistory: chatHistory.slice(-6),
+      }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        addMessage("ai", data.text);
+        speakText(data.text);
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setIsExplaining(false));
+  };
+
+  const handleTranslate = () => {
+    if (isExplaining) return;
+    const frameBase64 = captureFrame();
+    if (!frameBase64) return;
+    setIsExplaining(true);
+    setError(null);
+    addMessage("user", "🌐 Translate all text in this image.");
+    fetch("/api/explain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image: frameBase64,
+        question: "Read all text in this image and translate it.",
+        difficulty,
+        scanMode,
+        language,
+        mode: "translate",
+        conversationHistory: [],
+      }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        addMessage("ai", data.text);
+        speakText(data.text);
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setIsExplaining(false));
+  };
+
   return (
     <div className="flex flex-col md:flex-row h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 text-gray-50 font-sans overflow-hidden">
-      
+
       {/* Left Panel: Conversation History */}
       <div className="flex flex-col w-full md:w-96 border-r border-purple-500/30 bg-gradient-to-b from-gray-900 to-gray-800 h-1/2 md:h-full shrink-0 shadow-2xl">
         <div className="p-4 border-b border-purple-500/30 flex items-center justify-between shadow-sm z-10 bg-gradient-to-r from-purple-600 to-blue-600 rounded-t-lg">
           <h1 className="text-xl font-bold bg-gradient-to-r from-yellow-400 via-pink-500 to-purple-500 bg-clip-text text-transparent animate-pulse">✨ Explain Anything ✨</h1>
           <div className="text-sm text-purple-200">AI-Powered Vision</div>
         </div>
-        
+
         <div className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth bg-gradient-to-b from-transparent to-purple-900/10">
           {chatHistory.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-gray-400 space-y-3">
@@ -224,11 +372,10 @@ export default function Home() {
           ) : (
             chatHistory.map((msg) => (
               <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-in`}>
-                <div className={`max-w-[85%] rounded-2xl px-4 py-3 shadow-lg transform hover:scale-105 transition-transform ${
-                  msg.role === "user" 
-                    ? "bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-tr-sm shadow-blue-500/50" 
-                    : "bg-gradient-to-r from-gray-700 to-gray-800 text-gray-200 rounded-tl-sm border border-purple-500/30 shadow-purple-500/20"
-                }`}>
+                <div className={`max-w-[85%] rounded-2xl px-4 py-3 shadow-lg transform hover:scale-105 transition-transform ${msg.role === "user"
+                  ? "bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-tr-sm shadow-blue-500/50"
+                  : "bg-gradient-to-r from-gray-700 to-gray-800 text-gray-200 rounded-tl-sm border border-purple-500/30 shadow-purple-500/20"
+                  }`}>
                   {msg.role === "ai" && (
                     <div className="font-semibold text-xs text-purple-300 mb-1 flex items-center gap-1.5">
                       <span className="text-yellow-400">🤖</span> AI Assistant
@@ -255,7 +402,7 @@ export default function Home() {
 
       {/* Right Panel: Camera & Controls */}
       <div className="flex-1 flex flex-col relative h-1/2 md:h-full bg-gradient-to-br from-black via-purple-900/20 to-blue-900/20">
-        
+
         {/* Error Banner */}
         {error && (
           <div className="absolute top-4 left-4 right-4 z-50 bg-gradient-to-r from-red-600 to-pink-600 border border-red-400 text-red-100 px-4 py-3 rounded-xl shadow-lg flex justify-between items-center backdrop-blur-md transition-all animate-fade-in">
@@ -269,17 +416,17 @@ export default function Home() {
         {/* Camera Feed Container */}
         <div className="flex-1 relative overflow-hidden flex items-center justify-center">
           {!stream && !error && (
-             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-gradient-to-br from-purple-900 to-blue-900 z-10 rounded-lg">
-               <div className="w-16 h-16 border-4 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
-               <p className="text-purple-300 font-medium text-lg">🌟 Accessing Camera...</p>
-             </div>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-gradient-to-br from-purple-900 to-blue-900 z-10 rounded-lg">
+              <div className="w-16 h-16 border-4 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
+              <p className="text-purple-300 font-medium text-lg">🌟 Accessing Camera...</p>
+            </div>
           )}
           <video
             ref={videoRef}
             autoPlay
             playsInline
             muted
-            className="w-full h-full object-cover rounded-none md:rounded-l-3xl shadow-2xl transition-transform duration-700 hover:scale-105"
+            className="w-full h-full object-cover rounded-none md:rounded-l-3xl shadow-2xl transition-transform duration-700 hover:scale-105 [transform:scaleX(-1)]"
           />
           {/* Hidden Canvas for capture */}
           <canvas ref={canvasRef} className="hidden" />
@@ -290,15 +437,46 @@ export default function Home() {
               <button
                 key={level}
                 onClick={() => setDifficulty(level)}
-                className={`px-4 py-2 rounded-full text-xs font-semibold whitespace-nowrap transition-all duration-300 transform hover:scale-110 ${
-                  difficulty === level
-                    ? "bg-gradient-to-r from-purple-500 to-blue-500 shadow-md text-white scale-105"
-                    : "text-gray-300 hover:text-white scale-95 hover:scale-100 hover:bg-gradient-to-r hover:from-purple-600/50 hover:to-blue-600/50"
-                }`}
+                className={`px-4 py-2 rounded-full text-xs font-semibold whitespace-nowrap transition-all duration-300 transform hover:scale-110 ${difficulty === level
+                  ? "bg-gradient-to-r from-purple-500 to-blue-500 shadow-md text-white scale-105"
+                  : "text-gray-300 hover:text-white scale-95 hover:scale-100 hover:bg-gradient-to-r hover:from-purple-600/50 hover:to-blue-600/50"
+                  }`}
               >
                 {level === "Explain like I'm 5" ? "ELI5" : level}
               </button>
             ))}
+          </div>
+
+          <div className="absolute top-28 left-4 z-20 flex bg-gray-900/90 backdrop-blur-md p-1 rounded-full border border-purple-500/50 shadow-xl gap-1">
+            {(["nepali", "hindi", "english"] as const).map((lang) => {
+              const labels = { nepali: "नेपाली", hindi: "हिंदी", english: "EN" };
+              return (
+                <button
+                  key={lang}
+                  onClick={() => setLanguage(lang)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-300 ${language === lang
+                    ? "bg-gradient-to-r from-purple-500 to-blue-500 text-white shadow-md"
+                    : "text-gray-300 hover:text-white"
+                    }`}
+                >
+                  {labels[lang]}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="absolute top-40 left-4 z-20 flex items-center gap-2 bg-gray-900/90 backdrop-blur-md px-3 py-2 rounded-full border border-purple-500/50 shadow-xl">
+            <div
+              onClick={() => setIsLiveMode((v) => !v)}
+              className={`w-10 h-5 rounded-full cursor-pointer transition-colors duration-300 relative ${isLiveMode ? "bg-red-500" : "bg-gray-600"
+                }`}
+            >
+              <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-300 ${isLiveMode ? "translate-x-5" : "translate-x-0.5"
+                }`} />
+            </div>
+            <span className="text-xs text-gray-300 font-semibold">
+              {isLiveMode ? "🔴 Live" : "Live"}
+            </span>
           </div>
 
           {/* Scan Mode Selector */}
@@ -315,11 +493,10 @@ export default function Home() {
                 <button
                   key={mode}
                   onClick={() => setScanMode(mode)}
-                  className={`px-3 py-2 rounded-full text-xs font-semibold whitespace-nowrap transition-all duration-300 transform hover:scale-110 ${
-                    scanMode === mode
-                      ? "bg-gradient-to-r from-purple-500 to-blue-500 shadow-md text-white scale-105"
-                      : "text-gray-300 hover:text-white scale-95"
-                  }`}
+                  className={`px-3 py-2 rounded-full text-xs font-semibold whitespace-nowrap transition-all duration-300 transform hover:scale-110 ${scanMode === mode
+                    ? "bg-gradient-to-r from-purple-500 to-blue-500 shadow-md text-white scale-105"
+                    : "text-gray-300 hover:text-white scale-95"
+                    }`}
                 >
                   {icons[mode]} {mode}
                 </button>
@@ -337,16 +514,15 @@ export default function Home() {
           {/* Bottom Action Controls */}
           <div className="absolute bottom-8 w-full z-40 px-6">
             <div className="max-w-md mx-auto flex items-center justify-center gap-6">
-              
+
               {/* Voice Input Button */}
               <button
                 onClick={startVoiceInput}
                 disabled={isExplaining || isListening}
-                className={`relative group flex items-center justify-center w-16 h-16 rounded-full transition-all duration-300 transform hover:scale-110 ${
-                  isListening 
-                  ? "bg-gradient-to-r from-red-500 to-pink-500 text-white shadow-[0_0_25px_rgba(239,68,68,0.8)] animate-pulse" 
+                className={`relative group flex items-center justify-center w-16 h-16 rounded-full transition-all duration-300 transform hover:scale-110 ${isListening
+                  ? "bg-gradient-to-r from-red-500 to-pink-500 text-white shadow-[0_0_25px_rgba(239,68,68,0.8)] animate-pulse"
                   : "bg-gradient-to-r from-gray-800/90 to-purple-800/90 backdrop-blur-xl border border-purple-500/50 text-gray-300 hover:text-white shadow-xl hover:shadow-purple-500/30"
-                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
                 aria-label="Ask a question"
               >
                 <div className="absolute inset-0 rounded-full transition-transform duration-300 group-hover:scale-125 -z-10 bg-gradient-to-r from-purple-500/20 to-blue-500/20"></div>
@@ -356,22 +532,38 @@ export default function Home() {
                 {isListening && <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full animate-ping"></span>}
               </button>
 
+              {/* Solve Button */}
+              <button
+                onClick={handleSolve}
+                disabled={isExplaining || isListening}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-gradient-to-r from-amber-500 to-orange-500 text-white text-sm font-bold shadow-lg hover:scale-110 transition-all disabled:opacity-50"
+              >
+                🔢 Solve
+              </button>
+
               {/* Main Capture Button */}
               <button
                 onClick={() => handleExplain()}
                 disabled={isExplaining || isListening}
-                className={`relative flex items-center justify-center h-24 w-24 rounded-full border-4 border-white/30 p-1 transition-all duration-300 transform hover:scale-110 ${
-                  isExplaining ? "opacity-50 scale-95" : "hover:border-white/50 hover:scale-105 active:scale-95 shadow-[0_0_40px_rgba(0,0,0,0.7)]"
-                }`}
+                className={`relative flex items-center justify-center h-24 w-24 rounded-full border-4 border-white/30 p-1 transition-all duration-300 transform hover:scale-110 ${isExplaining ? "opacity-50 scale-95" : "hover:border-white/50 hover:scale-105 active:scale-95 shadow-[0_0_40px_rgba(0,0,0,0.7)]"
+                  }`}
                 aria-label="Capture and Explain"
               >
-                <div className={`w-full h-full rounded-full transition-colors duration-300 ${
-                  isExplaining ? "bg-gradient-to-r from-purple-600 to-blue-600" : "bg-white hover:bg-gradient-to-r hover:from-purple-200 hover:to-blue-200"
-                }`}></div>
-                
+                <div className={`w-full h-full rounded-full transition-colors duration-300 ${isExplaining ? "bg-gradient-to-r from-purple-600 to-blue-600" : "bg-white hover:bg-gradient-to-r hover:from-purple-200 hover:to-blue-200"
+                  }`}></div>
+
                 <span className="absolute -bottom-10 text-sm font-bold tracking-widest text-white/90 uppercase shadow-black drop-shadow-lg">
                   🚀 Explain
                 </span>
+              </button>
+
+              {/* Translate Button */}
+              <button
+                onClick={handleTranslate}
+                disabled={isExplaining || isListening}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-gradient-to-r from-green-500 to-teal-500 text-white text-sm font-bold shadow-lg hover:scale-110 transition-all disabled:opacity-50"
+              >
+                🌐 Translate
               </button>
 
             </div>
@@ -379,7 +571,7 @@ export default function Home() {
 
         </div>
       </div>
-{/* 
+      {/* 
       <style dangerouslySetInnerHTML={{__html: `
         @keyframes scan {
           0% { top: 0; opacity: 0; }

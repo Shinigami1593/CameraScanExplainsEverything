@@ -6,7 +6,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { image, question, difficulty, scanMode } = body;  // ← added scanMode here
+    const { image, question, difficulty, scanMode, language, mode, conversationHistory } = body;
 
     if (!image) {
       return NextResponse.json({ error: "No image provided" }, { status: 400 });
@@ -25,6 +25,20 @@ export async function POST(req: NextRequest) {
       systemInstruction = "You are an AI expert. The user is pointing their camera at something. Provide a highly detailed, technical, and precise explanation of what you see and its mechanics or underlying principles.";
     }
 
+    const langMap: Record<string, string> = {
+      nepali: "Always respond in Nepali language (नेपाली). Use simple, clear Nepali.",
+      hindi: "Always respond in Hindi language (हिंदी). Use simple, clear Hindi.",
+      english: "Always respond in English.",
+    };
+    const langInstruction = langMap[language] || langMap["nepali"];
+    systemInstruction += " " + langInstruction;
+
+    if (mode === "solve") {
+      systemInstruction += " The user wants you to solve a math problem or explain code. Show ALL steps clearly numbered. If math, solve completely. If code, explain each line and fix any bugs.";
+    } else if (mode === "translate") {
+      systemInstruction += ` Read ALL text visible in this image. Show the original text first, then translate every word to ${language === "nepali" ? "Nepali (नेपाली)" : language === "hindi" ? "Hindi (हिंदी)" : "English"}. Format: Original: ... | Translation: ...`;
+    }
+
     // --- ADD THIS BLOCK RIGHT HERE, AFTER THE DIFFICULTY BLOCK ---
     const modePrompts: Record<string, string> = {
       General: "",
@@ -38,6 +52,8 @@ export async function POST(req: NextRequest) {
     }
     // --- END OF NEW BLOCK ---
 
+    systemInstruction += " At the end of your response, always ask ONE follow-up question to encourage the user to learn more. The question must be in the same language as your response.";
+
     const userPrompt = question ? question : "What is this? Please explain what you see.";
     const base64Data = image.replace(/^data:image\/(png|jpeg|webp);base64,/, "");
 
@@ -46,18 +62,32 @@ export async function POST(req: NextRequest) {
       systemInstruction: systemInstruction,
     });
 
-    const result = await model.generateContent([
-      userPrompt,
-      {
-        inlineData: {
-          data: base64Data,
-          mimeType: "image/jpeg",
+    let contents: any[];
+    if (conversationHistory && conversationHistory.length > 0) {
+      contents = [
+        ...conversationHistory.map((msg: any) => ({
+          role: msg.role === "ai" ? "model" : "user",
+          parts: [{ text: msg.content }],
+        })),
+        {
+          role: "user",
+          parts: [
+            { text: userPrompt },
+            { inlineData: { data: base64Data, mimeType: "image/jpeg" } },
+          ],
         },
-      },
-    ]);
-
-    const responseText = result.response.text();
-    return NextResponse.json({ text: responseText });
+      ];
+      const chatResult = await model.generateContent({ contents });
+      const responseText = chatResult.response.text();
+      return NextResponse.json({ text: responseText });
+    } else {
+      const result = await model.generateContent([
+        userPrompt,
+        { inlineData: { data: base64Data, mimeType: "image/jpeg" } },
+      ]);
+      const responseText = result.response.text();
+      return NextResponse.json({ text: responseText });
+    }
 
   } catch (error: any) {
     console.error("Error in explain API:", error);
