@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 
-type ScanMode = "General" | "Ingredients" | "Hazards" | "Study" | "Translate";
+type ScanMode = "General" | "Study" | "Translate";
 type Language = "english" | "nepali" | "hindi";
 type Difficulty = "Explain like I'm 5" | "Student" | "Expert";
 
@@ -42,6 +42,8 @@ export default function Home() {
   const [isOutfitLoading, setIsOutfitLoading] = useState(false);
   const [outfitKeywords, setOutfitKeywords] = useState<string[]>([]);
 
+  const [isMobile, setIsMobile] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -76,6 +78,13 @@ export default function Home() {
     const newWidth = e.touches[0].clientX - containerRect.left;
     const clamped = Math.min(600, Math.max(250, newWidth));
     setPanelWidth(clamped);
+  }, []);
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    checkMobile(); // run once on mount
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
   }, []);
 
   useEffect(() => {
@@ -483,15 +492,13 @@ export default function Home() {
     <div ref={containerRef} className="flex flex-col md:flex-row h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 text-gray-50 font-sans overflow-hidden">
 
       {/* Left Panel: Conversation History */}
-      <div   className="flex flex-col border-r border-purple-500/30 bg-gradient-to-b from-gray-900 to-gray-800 shrink-0 shadow-2xl"
+      <div
+        className="flex flex-col border-r border-purple-500/30 bg-gradient-to-b from-gray-900 to-gray-800 shrink-0 shadow-2xl"
         style={{
-          width: typeof window !== "undefined" && window.innerWidth >= 768
-            ? `${panelWidth}px`
-            : "100%",
-          height: typeof window !== "undefined" && window.innerWidth >= 768
-            ? "100%"
-            : "50%",
-        }}>
+          width: isMobile ? "100%" : `${panelWidth}px`,
+          height: isMobile ? "50%" : "100%",
+        }}
+      >
         <div className="p-4 border-b border-purple-500/30 flex items-center justify-between shadow-sm z-10 bg-gradient-to-r from-purple-600 to-blue-600 rounded-t-lg">
           <h1 className="text-xl font-bold bg-gradient-to-r from-yellow-400 via-pink-500 to-purple-500 bg-clip-text text-transparent animate-pulse">✨ Explain Anything ✨</h1>
           <div className="text-sm text-purple-200">AI-Powered Vision</div>
@@ -736,7 +743,7 @@ export default function Home() {
               const icons: Record<ScanMode, string> = {
                 General: "🔍",
                 Study: "📚",
-                Translate: "🌐",
+                Translate: "🌐"
               };
               return (
                 <button
